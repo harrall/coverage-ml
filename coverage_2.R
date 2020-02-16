@@ -23,60 +23,64 @@ if(!require(readxl)) install.packages("readxl")
 if(!require(forcats)) install.packages("forcats")
 
 
-# Read in files & fix colums
-# Read in NKOM Dekning
-setwd("C:/Users/workhome/Dropbox (Analysys Mason AS)/2020-QGIS/data/nkom-dekning")
-#setwd("C:/Users/harald.wium.lie/Dropbox (Analysys Mason AS)/2020-QGIS/data/nkom-dekning")
-dat_nkom <- read_delim("nkom_med_tett.csv",delim = ",", locale = locale(decimal_mark = "."))
+# Read in files & fix columns
+# Download main coverage file from nkom.no, rename columns
+url <- "https://www.nkom.no/npt/dekningskart/2019/r%c3%a5data/2019_dekningskart_bygninger.csv"
+download.file(url, "nkom.csv")
+dat_nkom <- read_delim("nkom.csv",delim = ";", locale = locale(decimal_mark = "."))
+dat_nkom <- dat_nkom %>% rename(building_nr = byggnr)
 
-# Filter rural only, translate variables, remove unnneeded variables
-dat_nkom <- dat_nkom %>% filter(tettsted == FALSE)
+# Read in rural buildings
+url <- 'https://raw.githubusercontent.com/harrall/coverage-ml/master/rural_b.csv'
+rural_b <- read_delim(url,delim = ",", locale = locale(decimal_mark = "."))
+rural_b <- rural_b %>% rename(building_nr = bygnings_nr) %>% mutate(rural = 1)
+
+# Join rural buildings with main coverage file, filter on rural only
+dat_nkom <- left_join(dat_nkom, rural_b, by = "building_nr")
+dat_nkom <- dat_nkom %>% filter(rural == 1)
+
+# Translate variables into English, remove unnneeded variables
 dat_nkom <- dat_nkom %>%
-  rename(muni_nr = kommune_nr, building_nr = bygnings_nr,
-         homes = boliger) %>%
-  subset(select = -c(building_nr, nord, ost, tettsted))
+  rename(muni_nr = komnr, homes = boliger) %>%
+  subset(select = -c(building_nr, nord, ost, rural))
 
 # exclude Svalbard islands (muni 2100)
 dat_nkom <- dat_nkom[!(dat_nkom$muni_nr == 2100), ]
 
-# read municipal information, translate variables, remove unneeded columns
-setwd("C:/Users/workhome/Dropbox (Analysys Mason AS)/2020-QGIS/data/kommuneinfo/2018")
-#setwd("C:/Users/harald.wium.lie/Dropbox (Analysys Mason AS)/2020-QGIS/data/kommuneinfo/2018")
-dat_muni1 <- read_delim("2018_muni_all.csv",delim = ",", locale = locale(decimal_mark = "."))
+# Read municipal information, translate variables, remove unneeded columns
+url <- 'https://raw.githubusercontent.com/harrall/coverage-ml/master/2018_muni_all.csv'
+dat_muni <- read_delim(url,delim = ",", locale = locale(decimal_mark = "."))
 
-dat_muni1 <- dat_muni1 %>% 
+dat_muni <- dat_muni %>% 
   rename(muni_nr = kommune_nr, muni_homes = edr_homes) %>% 
   subset(select = -c(fylke, kommune))
 
 # change muni 1567 ("old Rindal") to 5061 ("new Rindal")
-dat_muni1[422, 1] = 5061
+dat_muni[422, 1] = 5061
 
 # make "county" column from muni_nr
-dat_muni1$muni_nr <- as.character(dat_muni1$muni_nr)
-dat_muni1 <- dat_muni1 %>% mutate(n_char = nchar(muni_nr),
+dat_muni$muni_nr <- as.character(dat_muni$muni_nr)
+dat_muni <- dat_muni %>% mutate(n_char = nchar(muni_nr),
                                   county = str_sub(muni_nr,1,n_char-2))
 
 # set Trøndelag region to 15, set numeric, remove n_char
-dat_muni1$county <- recode(dat_muni1$county,"50"="16")
-dat_muni1$muni_nr <- as.numeric(dat_muni1$muni_nr)
-dat_muni1$county <- as.numeric(dat_muni1$county)
-dat_muni1 <- subset(dat_muni1, select = -c(n_char))
+dat_muni$county <- recode(dat_muni$county,"50"="16")
+dat_muni$muni_nr <- as.numeric(dat_muni$muni_nr)
+dat_muni$county <- as.numeric(dat_muni$county)
+dat_muni <- subset(dat_muni, select = -c(n_char))
 
-
-# read historical coverage info and merge into muni set
-setwd("C:/Users/workhome/Dropbox (Analysys Mason AS)/2020-QGIS/data/nkom-dekning")
-#setwd("C:/Users/harald.wium.lie/Dropbox (Analysys Mason AS)/2020-QGIS/data/kommuneinfo/2018")
-dat_hist <- read_delim("hist_coverage.csv",delim = ",", locale = locale(decimal_mark = "."))
+# Read historical coverage info and merge into muni set, remove unneeded tibbles
+url <- 'https://raw.githubusercontent.com/harrall/coverage-ml/master/hist_coverage.csv'
+dat_hist <- read_delim(url,delim = ",", locale = locale(decimal_mark = "."))
 dat_hist <- dat_hist %>% dplyr::rename(muni_nr = knr, 
                                 oneh_s_13 ='100S_2013', oneh_a_13 ='100A_2013')
 
-dat_muni <- left_join(dat_muni1, dat_hist, by = "muni_nr")
+dat_muni <- left_join(dat_muni, dat_hist, by = "muni_nr")
+rm(dat_hist, rural_b)
 
-rm(dat_hist, dat_muni1)
-
-# read public support information, tally and merge
-setwd("C:/Users/workhome/Dropbox (Analysys Mason AS)/2020-QGIS/data/nkom-dekning")
-dat_support <- read_delim("bb_support.csv",delim = ",", locale = locale(decimal_mark = "."))
+# Read public support information, tally and merge
+url <- 'https://raw.githubusercontent.com/harrall/coverage-ml/master/bb_support.csv'
+dat_support <- read_delim(url,delim = ",", locale = locale(decimal_mark = "."))
 dat_support <- dat_support %>% 
   group_by(knr) %>% 
   summarize(count=n()) %>% 
@@ -86,13 +90,11 @@ dat_muni$count[is.na(dat_muni$count)]<-0
 dat_muni <- dat_muni %>% rename(public_support = count)
 rm(dat_support)
 
-# merge into one dataset, rearrange so that Y comes first, factorize variables
+# Merge into one dataset, rearrange so that Y comes first, factorize variables
 dat_all <- left_join(dat_nkom, dat_muni, by = "muni_nr")
 refcol <- "100mbit"
 dat_all <- dat_all[, c(refcol, setdiff(names(dat_all), refcol))]
 dat_all <- dat_all %>% rename(Y100 = "100mbit", b30 = "30mbit", b10 = "10mbit")
-
-# dat_all$Y100 <- as.factor(dat_all$Y100)
 rm(refcol)
 
 # make new variables and remove unneeded variables
@@ -105,20 +107,15 @@ dat_all <- dat_all %>%
 dat_all$urban_pop_per_km2[is.na(dat_all$urban_pop_per_km2)] <- 0
 dat_all <- subset(dat_all, select = -c(muni_nr, b30, knr_old, Navn, share_urban))
 
-
 # check for NAs and remove
 summary(dat_all$Y100)
 rm(dat_muni, dat_nkom)
-
-mean(dat_all$Y100 == 0)
-
 
 ######### Part 2 ###############
 # Data exploration
 ################################
 
 # Correlation table
-dat_all$Y100 <- as.numeric(dat_all$Y100)
 corr <- correlate(dat_all) 
 
 # Correlation plot
@@ -131,7 +128,8 @@ corr %>% select(rowname, Y100) %>%
   labs(title = "Correlation with Y100",
        x = "Feature",
        y = "Correlation with Y") +
-  coord_flip() 
+  coord_flip()
+rm(corr)
 
 # Find average coverage
 y_hat <- 1
@@ -241,24 +239,24 @@ test_set <- dat_small[test_index,]
 train_set <- as.data.frame(train_set)
 test_set <- as.data.frame(test_set)
 
-## The first model - accuracy = 0.54
+## The first model - accuracy = 0.55
 y_hat <- 0
 mu_naive <- mean(y_hat == test_set$y100f)
 mu_naive
 
-# LDA - 0.63 - short run time
+# LDA - 0.59 - short run time
 train_lda <- train(y100f ~ .,method = "lda",data = train_set)
 confusionMatrix(predict(train_lda, test_set), test_set$y100f)$overall["Accuracy"]
 lda_imp <- varImp(train_lda)
 plot(lda_imp)
 
-# GLM model - works - 0.62 - short run time
+# GLM model - works - 0.58 - short run time
 train_glm <- train(y100f ~ .,method = "glm",data = train_set)
 confusionMatrix(predict(train_glm, test_set), test_set$y100f)$overall["Accuracy"]
 glm_imp <- varImp(train_glm)
 plot(glm_imp)
 
-# KNN model - works - 0.68 - short run time
+# KNN model - works - 0.65 - medium run time
 train_knn <- train(y100f ~ ., method = "knn",data = train_set)
 confusionMatrix(predict(train_knn, test_set), test_set$y100f)$overall["Accuracy"]
 imp_knn <- varImp(train_knn)
@@ -273,64 +271,3 @@ rf_imp <- varImp(train_rf)
 plot(rf_imp)
 rf_imp
 
-#################### old code
-test <- dat_small %>% {prop.table(table(.$county, .$Y100))}
-
-test <- dat_small %>% with(table(county,Y100)) %>% as.data.frame.matrix() 
-
-dat_small$Y100 <- as.numeric(dat_small$Y100)
-test <- dat_small %>% group_by(county) %>% summarise(count = n())
-test
-dat_small$Y100 <- as.factor(dat_small$Y100)
-
-
-# Correlantion #1
-corr %>% select(rowname, Y100) %>%
-  filter(rowname != 'Y100')%>%
-  mutate(rowname=factor(rowname, levels = rowname[order(Y100)])) %>%
-  ggplot(aes(x = rowname, y = Y100)) +
-  geom_bar(stat = 'identity') +
-  coord_flip() 
-
-test <- table(dat_small$homes, dat_small$Y100)
-test <- table(dat_small$op_hq, dat_small$Y100)
-test <- table(dat_small$public_support, dat_small$Y100)
-test <- table(dat_small$core, dat_small$Y100)
-test <- table(dat_small$b10, dat_small$Y100)
-test <- table(dat_small$county, dat_small$Y100)
-
-test_prop <- prop.table(test,1)
-plot(test_prop)
-
-test_prop <- as.data.frame(test_prop)
-colnames(test_prop) <- c("Variable","Y100","Frequency")
-test_prop %>% ggplot(aes(x = Variable, y=Frequency, fill = Y100)) + geom_bar(stat='identity')
-
-# county - ver 1
-as.data.frame(prop.table(table(dat_small$county, dat_small$Y100),1)) %>%
-  rename(Variable = Var1, Y100=Var2, Frequency = Freq) %>%
-  filter(Y100 == 1) %>% arrange(Frequency) %>%
-  mutate(Variable=factor(Variable, levels = Variable)) %>%
-  ggplot(aes(x = Variable, y=Frequency, fill = Y100)) + geom_bar(stat='identity') +
-  geom_hline(yintercept = average)
-
-# Fit a random forest model (using ranger) - runs but no importance variable - try importance=TRUE
-# 0.72! (Long run time)
-train_ranger <- train(y100f ~ ., data = train_set, method = "ranger", importance=TRUE)
-confusionMatrix(predict(train_ranger, test_set), test_set$y100f)$overall["Accuracy"]
-train_ranger
-varImp(train_ranger) #does not work, try with "importance = TRUE"
-
-# Neuralnet - works - low accuracy - 0.55 - probably not include
-train_nnet<-train(y100f ~.,method='nnet', data = train_set)
-confusionMatrix(predict(train_nnet, test_set), test_set$y100f)$overall["Accuracy"]
-imp_nnet <- varImp(train_nnet)
-plot(imp_nnet)
-
-install.packages("FCNN4R")
-
-train_rf <- train(y100f ~ ., method = "mlpSGD", data = train_set)
-confusionMatrix(predict(train_rf, test_set), test_set$y100f)$overall["Accuracy"]
-rf_imp <- varImp(train_rf)
-plot(rf_imp)
-rf_imp
