@@ -1,0 +1,495 @@
+---
+title: "Rural broadband coverage project report"
+author: "Harald Lie"
+date: "2020-Feb-28"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Introduction and datasets
+This report describes the Rural broadband coverage project that is the second of two projects required for the last course in the "Professional Certificate in Data Science" programme at Harvard University.  
+Broadband internet access became commercially available in many countries in the late 1990s, and has become a very popular service among households and businesses. In Norway, more than 95% of households have some sort of Internet access at home. There is a large gap, however, between the haves and the have-nots: The average download speed for Norwegian residential users is currently more than 150 Mbit/s, but the variation is high and many households have only access to a 20 Mbit/s service or even less. 
+Most of the homes and businesses with access to low broadband speeds are located in rural areas, and rural Internet coverage is the scope of this report. The main data set that I have used for the project includes Internet coverage information about almost 458 000 buildings in rural Norway. The data set is publicly available and is published annually by Nkom, the Norwegian telecoms regulator[^1]. It has data for all buildings - also urban - but I filtered out the urban buildings since Internet coverage in general is rather good and it is normally profitable to build high-speed networks in urban areas.  
+This is not always the case in rural areas: The cost of deploying a broadband network is highly correlated with distance between customers, and almost per definition this distance is higher in rural areas. Statistics Norway defines an urban areas as an area with at least 200 inhabitants (ca 100 homes) and less than 50 metres between houses. Among rural buildings in the dataset, ca 45% have access to a 100 Mbit/s, while the average for all buildings in Norway is close to 90%.  
+
+### Project objective {.css_class}
+Given that ca. 45% of rural buildings actually have 100 Mbit/s coverage, quite a bit of deployment have happened over the years. The project objective is to develop a high-quality model that can predict whether a rural building in Norway has 100 Mbit/s coverage or not, and to understand important drivers for rural high-speed broadband access.  
+
+[^1]: The dataset and coverage maps can be found at www.nkom.no/teknisk/bredb%C3%A5nd/utbygging/dekningsinformasjon
+
+```{r setup2, include=FALSE}
+######### Part 1 ###############
+# Create dataset, validation set
+################################
+
+# Ensure the right packages are available
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate")
+if(!require(ggthemes)) install.packages("ggthemes")
+if(!require(rmarkdown)) install.packages("rmarkdown")
+if(!require(knitr)) install.packages("knitr")
+if(!require(stringr)) install.packages("stringr")
+if(!require(corrr)) install.packages("corrr")
+if(!require(readxl)) install.packages("readxl")
+if(!require(forcats)) install.packages("forcats")
+if(!require(gridExtra)) install.packages("gridExtra")
+
+# Read in files & fix columns
+# Download main coverage file from nkom.no, rename columns
+url <- "https://www.nkom.no/npt/dekningskart/2019/r%c3%a5data/2019_dekningskart_bygninger.csv"
+download.file(url, "nkom.csv")
+dat_nkom <- read_delim("nkom.csv",delim = ";", locale = locale(decimal_mark = "."))
+dat_nkom <- dat_nkom %>% rename(building_nr = byggnr)
+
+# Read in rural buildings
+url <- 'https://raw.githubusercontent.com/harrall/coverage-ml/master/rural_b.csv'
+rural_b <- read_delim(url,delim = ",", locale = locale(decimal_mark = "."))
+rural_b <- rural_b %>% rename(building_nr = bygnings_nr) %>% mutate(rural = 1)
+
+# Join rural buildings with main coverage file, filter on rural only
+dat_nkom <- left_join(dat_nkom, rural_b, by = "building_nr")
+dat_nkom <- dat_nkom %>% filter(rural == 1)
+
+
+
+```
+
+### Datsets {.css_class}
+I have combined data from several sources for the analysis. The main dataset, the Nkom dataset, has eight columns and looks like this:  
+```{r Nkom_dataset, echo=FALSE}
+head(dat_nkom)
+```
+
+It includes:  
+* *komnr* - the municipality ID which uniquely identifies ca. 370 municipalities in Norway  
+* *byggnr* - the unique building ID from the official property register  
+* *boliger* - the number of apartments in each building  
+* *nord and ost* - building geographical coordinates  
+* *10mbit, 30mbit, and 100mbit* - Flags for whether the building has 10, 30 or 100 Mbit/s broadband coverage  
+
+
+```{r other_datasets, include=FALSE}
+# Translate variables into English, remove unnneeded variables
+dat_nkom <- dat_nkom %>%
+  rename(muni_nr = komnr, homes = boliger) %>%
+  subset(select = -c(building_nr, nord, ost, rural))
+
+# exclude Svalbard islands (muni 2100)
+dat_nkom <- dat_nkom[!(dat_nkom$muni_nr == 2100), ]
+
+# Read municipal information, translate variables, remove unneeded columns
+url <- 'https://raw.githubusercontent.com/harrall/coverage-ml/master/2018_muni_all.csv'
+dat_muni <- read_delim(url,delim = ",", locale = locale(decimal_mark = "."))
+
+dat_muni <- dat_muni %>% 
+  rename(muni_nr = kommune_nr, muni_homes = edr_homes) %>% 
+  subset(select = -c(fylke, kommune))
+
+# change muni 1567 ("old Rindal") to 5061 ("new Rindal")
+dat_muni[422, 1] = 5061
+
+# make "county" column from muni_nr
+dat_muni$muni_nr <- as.character(dat_muni$muni_nr)
+dat_muni <- dat_muni %>% mutate(n_char = nchar(muni_nr),
+                                  county = str_sub(muni_nr,1,n_char-2))
+
+# set Trøndelag region to 15, set numeric, remove n_char
+dat_muni$county <- recode(dat_muni$county,"50"="16")
+dat_muni$muni_nr <- as.numeric(dat_muni$muni_nr)
+dat_muni$county <- as.numeric(dat_muni$county)
+dat_muni <- subset(dat_muni, select = -c(n_char))
+
+# make new municipal variable: density of rural households
+dat_muni <- dat_muni %>% 
+  mutate(rural_density = (households * share_urban) / (area_km2 - urban_area))
+
+# Read historical coverage info and merge into muni set, remove unneeded tibbles
+url <- 'https://raw.githubusercontent.com/harrall/coverage-ml/master/hist_coverage.csv'
+dat_hist <- read_delim(url,delim = ",", locale = locale(decimal_mark = "."))
+dat_hist <- dat_hist %>% dplyr::rename(muni_nr = knr, 
+                                oneh_s_13 ='100S_2013', oneh_a_13 ='100A_2013')
+
+dat_muni <- left_join(dat_muni, dat_hist, by = "muni_nr")
+rm(dat_hist, rural_b)
+
+# Read public support information, tally and merge
+url <- 'https://raw.githubusercontent.com/harrall/coverage-ml/master/bb_support.csv'
+dat_support <- read_delim(url,delim = ",", locale = locale(decimal_mark = "."))
+dat_support <- dat_support %>% 
+  group_by(knr) %>% 
+  summarize(count=n()) %>% 
+  rename(muni_nr = knr)
+dat_muni <- left_join(dat_muni, dat_support, by = "muni_nr")
+dat_muni$count[is.na(dat_muni$count)]<-0 
+dat_muni <- dat_muni %>% rename(public_support = count)
+rm(dat_support)
+
+# Merge into one dataset, rearrange so that Y comes first, factorize variables
+dat_all <- left_join(dat_nkom, dat_muni, by = "muni_nr")
+refcol <- "100mbit"
+dat_all <- dat_all[, c(refcol, setdiff(names(dat_all), refcol))]
+dat_all <- dat_all %>% rename(Y100 = "100mbit", b30 = "30mbit", b10 = "10mbit")
+rm(refcol)
+
+# make new variables and remove unneeded variables
+dat_all <- dat_all %>%
+  mutate(pop_per_km2 = population / area_km2,
+         urban_pop_per_km2 = (population * share_urban2) / urban_area,
+         core = ifelse(oneh_s_13 > 0.10,1,0),
+         share_live_homes = households / muni_homes)
+
+dat_all$urban_pop_per_km2[is.na(dat_all$urban_pop_per_km2)] <- 0
+dat_all <- subset(dat_all, select = -c(muni_nr, b30, knr_old, Navn, share_urban))
+```
+
+
+The Nkom dataset was combined with the following datasets[^2]:  
+* **rural_b** - a list of building numbers that are located in rural areas.   
+* **dat_muni** - data from Statistics Norway that includes various municipality-level 
+  information such as population, size, income, and employment levels.  
+* **dat_hist** - data from Nkom regarding municipality-level historical coverage 
+  information from 2001 and 2013.  
+* **dat_support** - yearly data from Nkom that shows which municipalities that were 
+  the recipient of broadband deployment subsidies from the national government.  
+
+[^2]: All of these datasets are available at my GitHub repository: github.com/harrall/coverage-ml 
+
+
+```{r remove, include=FALSE}
+# check for NAs and remove
+summary(dat_all$Y100)
+rm(dat_muni, dat_nkom)
+```
+
+### Data cleaning and wrangling {.css_class}
+
+I wrangled the five datasets into one dataset - dat_all - and used that for analysis and modeling. The wrangling part was challenging since I have used data from different years and Norwegian municipalities tend to merge and split up every now and then. In addition, each municipality belong to one of ca. 15 counties, but the county structure has also been changed in recent years. In any case, dat_all has almost 458 000 rows and 28 variables. One of them, called Y100, is the outcome variable. When Y100 has the value '1' it means that the building has 100 Mbit/s broadband coverage, and a '0' means that it does not have coverage. The remaining 27 variables are predictors.  Here's a glimpse of the dat_all dataset:
+
+```{r glimpse_dat_all, echo=FALSE}
+glimpse(dat_all)
+```
+
+
+## 2. Analysis
+This chapter describes data wrangling, data exploration, and the modeling approach I decided on. First, I looked at the correlation between Y100 and the predictor variables. The chart looks like this:  
+
+```{r correlation, echo=FALSE, message=FALSE}
+######### Part 2 ###############
+# Data exploration
+################################
+
+# Correlation table
+corr <- correlate(dat_all) 
+
+# Correlation plot
+corr_plot <- corr %>% select(rowname, Y100) %>%
+  filter(rowname != 'Y100')%>%
+  mutate(rowname=factor(rowname, levels = rowname[order(Y100)])) %>%
+  ggplot(aes(x = rowname, y = Y100)) +
+  geom_segment( aes(xend=rowname, yend=0)) +
+  geom_point( size=4, color="#993366") +
+  labs(title = "Correlation with Y100",
+       x = "Feature",
+       y = "Correlation with Y") +
+  coord_flip()
+corr_plot
+rm(corr)
+```
+
+Most variables are not very correlated with Y100, but some variables stand out:  
+* **b10:** Whether the building has 10 Mbit/s coverage - primarily from mobile 4G networks  
+* **county:** The county ID. As we will see later, this variable is quite important. Is is not a random ID: Rather, county 1 starts in the south-eastern part of Norway and it goes all the way to Finnmark county (no 18) in the far north of the country.  
+* **public_support:** The number of times that a municipality has received national support for broadband projects.  
+* **oneh_s_13:** The municipal coverage of symmetrical 100 Mbit/s networks (in practise, fiber access networks) in 2013. The 'core' variable has value 1 of this coverage was larger than 10% and 0 if not.  
+* **op_hq:** There are some 80 fiber access network operators in Norway that provide 100 Mbit/s networks. The op_hq variable has a value of 1 if the building is located in a municipiality where one of these 80 operators has their main office.  
+* **ave_income:** The average gross income per adult in the municipality.  
+
+Next, I looked at the average 100 Mbit/s coverage for rural buildings:  
+```{r ave_coverage}
+# Find average coverage
+y_hat <- 1
+average <- mean(y_hat == dat_all$Y100)
+```
+
+The average 100 Mbit/s coverage is `r average`. This means that by guessing that a building will *not* have coverage, we would be correct ca 55% of the time.  
+
+### Analysis - categorical variables {.css_class}
+
+The chart below shows coverage by county. It is clear that the likelyhood of having 100 Mbit/s coverage will vary quite a bit with the county that the building is located in.  
+
+
+```{r county, fig.width=4, fig.height=3,echo=FALSE, message=FALSE}
+# Rural coverage by county
+as.data.frame(prop.table(table(dat_all$county, dat_all$Y100),1)) %>%
+  rename(Variable = Var1, Y100=Var2, Frequency = Freq) %>%
+  filter(Y100 == 1) %>% arrange(Frequency) %>%
+  mutate(Variable=factor(Variable, levels = Variable)) %>%
+  ggplot(aes(x = Variable, y=Frequency)) + 
+  geom_segment( aes(xend=Variable, yend=0)) +
+  geom_point( size=4, color="#993366") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(title = "Rural coverage by county",
+       x = "County ID",
+       y = "Rural share with 100 Mbit/s coverage") + 
+  geom_hline(yintercept = average)
+```
+
+The chart below show coverage by precence of operator headquartes. The rural coverage is slightly higher in municipalities that hosts the main office of a fiber network.  
+
+
+```{r op_hq, fig.width=4, fig.height=3,echo=FALSE, message=FALSE}
+# op_hq
+as.data.frame(prop.table(table(dat_all$op_hq, dat_all$Y100),1)) %>%
+  rename(Variable = Var1, Y100=Var2, Frequency = Freq) %>%
+  filter(Y100 == 1) %>% arrange(Frequency) %>%
+  mutate(Variable=factor(Variable, levels = Variable)) %>%
+  ggplot(aes(x = Variable, y=Frequency)) + 
+  geom_bar(stat='identity', fill = "#993366") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(title = "Rural coverage by operator HQ presense",
+       x = "Operator HQ in municipality?",
+       y = "Rural share with 100 Mbit/s coverage") + 
+  geom_hline(yintercept = average)
+```
+
+The chart below shows rural coverage by the number of times that a municipality has received national support. It is interesting that the municipalities with the highest number of supported projects have the lowest coverage.  
+
+```{r public_support, fig.width=4, fig.height=3,echo=FALSE, message=FALSE}
+# public support
+as.data.frame(prop.table(table(dat_all$public_support, dat_all$Y100),1)) %>%
+  rename(Variable = Var1, Y100=Var2, Frequency = Freq) %>%
+  filter(Y100 == 1) %>% arrange(Frequency) %>%
+  mutate(Variable=factor(Variable, levels = Variable)) %>%
+  ggplot(aes(x = Variable, y=Frequency)) + 
+  geom_bar(stat='identity', fill = "#993366") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(title = "Coverage vs. number of national projects",
+       x = "Number of subsidized projects in municipality",
+       y = "Rural share with 100 Mbit/s coverage") + 
+  geom_hline(yintercept = average)
+```
+
+The chart below shows that rural buildings located in municipalities with some (>10%) fiber broadband coverage in 2013 has higher chance of having 100 Mbit/s coverage today.  
+
+ 
+```{r core, fig.width=4, fig.height=3,echo=FALSE, message=FALSE}
+# core
+as.data.frame(prop.table(table(dat_all$core, dat_all$Y100),1)) %>%
+  rename(Variable = Var1, Y100=Var2, Frequency = Freq) %>%
+  filter(Y100 == 1) %>% arrange(Frequency) %>%
+  mutate(Variable=factor(Variable, levels = Variable)) %>%
+  ggplot(aes(x = Variable, y=Frequency)) +
+  geom_bar(stat='identity', fill = "#993366") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(title = "Coverage by 2013 coverage status",
+       x = "Municipality had >10% fiber coverage in 2013",
+       y = "Rural share with 100 Mbit/s coverage") + 
+  geom_hline(yintercept = average)
+```
+ 
+
+### Analysis - continous variables {.css_class}
+The charts below shows density plots for some of the predictors that are continous. For most of them, it is hard to spot any meaningful differences between the predictors in terms of 100 Mbit/s rural coverage for rural buildings. But buildings located in municipalities with higher average income seems to have slightly better 100 Mbit/s coverage than others.  
+
+
+```{r density_plot, echo=FALSE, message=FALSE, warning=FALSE }
+# Plots - Continous distributions
+
+dat_all$y100f <- as.factor(dat_all$Y100)
+p1 <- dat_all %>% ggplot(aes(ave_income, colour = y100f)) + geom_density(size=1.2)
+p2 <- dat_all %>% ggplot(aes(centrality, colour = y100f)) + geom_density(size=1.2)
+p3 <- dat_all %>% ggplot(aes(employment, colour = y100f)) + geom_density(size=1.2)
+p4 <- dat_all %>% ggplot(aes(pop_urban, colour = y100f)) + geom_density(size=1.2) +
+  scale_x_continuous(limits = c(0, 50000))
+p5 <- dat_all %>% ggplot(aes(muni_free_rev, colour = y100f)) + geom_density(size=1.2)
+p6 <- dat_all %>% ggplot(aes(muni_debt, colour = y100f)) + geom_density(size=1.2)
+
+grid.arrange(p1,p2,p3,p4,p5,p6)
+
+```
+
+
+## 3. Modeling
+This chapter desribes the modeling work I did with the dat_all data. First, I normalized the continous variables so that they have mean=0 and a standard deviation of 1. Then, I split the data into a training set and test set. Here's the code:  
+
+
+```{r test_train, message=FALSE, warning=FALSE}
+######### Part 3 ###############
+# Modeling
+################################
+
+## Normalize continous variables with mean=0 and sd=1
+dat_all <- dat_all %>% 
+  mutate(ave_income = (ave_income - mean(ave_income))/sd(ave_income),
+         centrality = (centrality - mean(centrality))/sd(centrality),
+         employment = (employment - mean(employment))/sd(employment),
+         pop_urban = (pop_urban - mean(pop_urban))/sd(pop_urban),
+         muni_free_rev = (muni_free_rev - mean(muni_free_rev))/sd(muni_free_rev),
+         muni_debt = (muni_debt - mean(muni_debt))/sd(muni_debt),
+         muni_net = (muni_net - mean(muni_net))/sd(muni_net),
+         share_urban2 = (share_urban2 - mean(share_urban2))/sd(share_urban2),
+         area_km2 = (area_km2 - mean(area_km2))/sd(area_km2),
+         muni_homes = (muni_homes - mean(muni_homes))/sd(muni_homes),
+         households = (households - mean(households))/sd(households),
+         virksomheter = (virksomheter - mean(virksomheter))/sd(virksomheter),
+         rural_density = (rural_density - mean(rural_density))/sd(rural_density),
+         urban_area = (urban_area - mean(urban_area))/sd(urban_area),
+         pop_per_km2 = (pop_per_km2 - mean(pop_per_km2))/sd(pop_per_km2),
+         urban_pop_per_km2 = (urban_pop_per_km2 - mean(urban_pop_per_km2))/sd(urban_pop_per_km2))
+
+## Make test and training set
+set.seed(1, sample.kind = "Rounding")
+dat_small <- sample_n(dat_all,1000,replace = FALSE)
+# for final round: set dat_small <- dat_all
+
+dat_small <- dat_small %>%
+  subset(select = -c(Y100))
+
+test_index <- createDataPartition(y = dat_small$y100f, times = 1, p = 0.1, list = FALSE)
+train_set <- dat_small[-test_index,]
+test_set <- dat_small[test_index,]
+
+train_set <- as.data.frame(train_set)
+test_set <- as.data.frame(test_set)
+
+```
+
+
+### A first model - just the average {.css_class}
+In the first model I simply took the chance of not having coverage and used that as the predictor.
+
+```{r first_example, message=FALSE}
+## The first model - accuracy = 0.55
+y_hat <- 0
+mu_naive <- mean(y_hat == test_set$y100f)
+mu_naive
+
+```
+
+The chance of *not* having 100 Mbit/s coverage is `r mu_naive` on the training set. If we were to guess, our best guess would be "this building does not have coverage", and we would be right ca 55% of the time.  
+But can we do better? Let's try a few machine-learning models.  
+
+### The Caret package and the LDA method {.css_class}  
+
+The Caret package is a framework for building machine learning models in R and supports a number of modeling methods. I started out with the Linear Discriminant Analysis (LDA) method. Linear Discriminant Analysis (LDA) is a well-established machine learning technique and classification method for predicting categories. Its main advantages, compared to other classification algorithms such as neural networks and random forests, are that the model is interpretable and that prediction is easy. Linear Discriminant Analysis is frequently used as a dimensionality reduction technique for pattern recognition or classification and machine learning[^3]. Here's the code and a plot that shows the relative importance of the variables:
+
+[^3]: Source: DisplayR blog - Linear Discriminant Analysis in R - An introduction
+
+
+```{r lda, message=FALSE, warning=FALSE}
+# LDA model
+train_lda <- train(y100f ~ .,method = "lda",data = train_set)
+acc_lda <- confusionMatrix(predict(train_lda, test_set), test_set$y100f)$overall["Accuracy"]
+lda_imp <- varImp(train_lda)
+plot(lda_imp)
+```
+
+The accuracy achieved with the LDA method is `r acc_lda`. This result is not much higher than what plain guessing achieved. Can we do better with other methods?
+
+### The logistic regression model (GLM) {.css_class}  
+
+Logistic regression is a technique that is well suited for examining the relationship between a categorical response variable and one or more categorical or continuous predictor variables. The model is generally presented in the following format, where beta refers to the parameters and x represents the independent variables:
+
+
+$$log(odds) = \beta_0 + \beta_1 * x_1 + ... \beta_n * x_n$$
+
+The log(odds), or log-odds ratio, is defined by ln[p/(1-p)] and expresses the natural logarithm of the ratio between the probability that an event will occur, p(Y=1), to the probability that it will not occur[^4]. Here's the code and a plot that shows the relative importance of the variables:
+
+[^4]: Source: R-bloggers: Evaluating Logistic Regression Models, August 2015
+
+
+```{r glm, message=FALSE, warning=FALSE}
+# GLM model
+train_glm <- train(y100f ~ .,method = "glm",data = train_set)
+acc_glm <- confusionMatrix(predict(train_glm, test_set), test_set$y100f)$overall["Accuracy"]
+glm_imp <- varImp(train_glm)
+plot(glm_imp)
+```
+
+The accuracy achieved with the GLM method is `r acc_glm`. This result is a little better than the LDA method, but it is not much better than guessing. What about other models?  
+
+### The  k-nearest neighbors model (kNN) {.css_class}  
+
+Unlike the methods I have used until now, the kNN algorithm is non-parametric since it uses the neighbor points information to predict the outcome.
+
+At first, the kNN model defines the distance between all observations based on the features. Then, for any point (x1,x2) for which we want an estimate of p(x1,x2), we look for the k nearest points to (x1,x2) and then take an average of the 0s and 1s associated with these points. We refer to the set of points used to compute the average as the neighborhood[^5]. Here's the code and a plot that shows the relative importance of the variables:
+
+[^5]: Source: Introduction to Data Science, Rafael A. Irizarry, Feb-2020
+
+```{r knn, message=FALSE, warning=FALSE}
+# KNN model
+train_knn <- train(y100f ~ ., method = "knn",data = train_set)
+acc_knn <- confusionMatrix(predict(train_knn, test_set), test_set$y100f)$overall["Accuracy"]
+imp_knn <- varImp(train_knn)
+plot(imp_knn)
+
+```
+
+The accuracy achieved with the kNN method is `r acc_knn`. This result is much better than the parametric LDS and GLM methods, and some 10 percentage points better than guessing. Not bad! But can we do even better?  
+
+### The random forests model (RF) {.css_class}  
+According to the author Anish Walia, ensemble learning is a type of supervised learning technique where the basic idea is to generate multiple models on a training dataset and then combine them to generate a well-performing model which aviods overfitting.  
+Random Forests is an ensemble learning technique, and in the data science class we have learned that "Random forests are a very popular machine learning approach that addresses the shortcomings of decision trees using a clever idea. The goal is to improve prediction performance and reduce instability by averaging multiple decision trees (a forest of trees constructed with randomness)."[^5]   
+Here's the code for the Random Forest model and a plot that shows the relative importance of the variables:
+
+
+```{r rf, message=FALSE, warning=FALSE}
+# Random forests
+train_rf <- train(y100f ~ ., method = "rf", data = train_set)
+acc_rf <- confusionMatrix(predict(train_rf, test_set), test_set$y100f)$overall["Accuracy"]
+rf_imp <- varImp(train_rf)
+plot(rf_imp)
+
+```
+
+The accuracy achieved with the Randon Forests method is `r acc_rf`. This result is the best so far, and we're now far from 'simply-guessing' territory. There is little question that we can increase the quality of rural broadband coverage predictions using machine learning methods.  
+\newpage
+
+## 4. Results and conclusion
+
+### Results table {.css_class}  
+
+The table below summarizes the accuracy achieved from the various models applied to the validation dataset called "train_set".  
+
+```{r results, include=FALSE}
+######### Part 4 ##################################
+# Results - model accuracy and variable importance
+###################################################
+
+# Add results - naive method
+rm(results)
+results <- tibble(model = "Naive method", Accuracy = mu_naive)
+
+# Add results - LDA
+results <- add_row(results, model = "LDA", Accuracy = acc_lda)
+
+# Add results - GLM
+results <- add_row(results, model = "GLM", Accuracy = acc_glm)
+
+# Add results - KNN
+results <- add_row(results, model = "KNN", Accuracy = acc_knn)
+
+# Add results - Random Forest
+results <- add_row(results,  model = "Random Forest", Accuracy = acc_rf)
+```
+
+```{r results2, echo=FALSE, results='asis'}
+kable(results, caption = "Accuracy results")
+```
+Clearly, the choice of machine-learning method really matters. The quality of predictions varies quite a bit with the algorithm, and it is important to try out different models before making a final decision on which model to use.
+
+### Conclusion {.css_class}  
+The report describes my work with various rural broadband prediction models. I have documented how I wrangled the data, explored the data, made different models using the dat_all dataset, and also how I applied the final model to the validation set.  
+But is the project objective - to develop a model for high-quality rural broadband predictions - met? In my view, no. The final model has an accuracy of `r acc_rf` which is much better than simply guessing. But it is not good enough to make investment decisions or to inform public policy.  
+More pre-processing of the data, such as creating creating dummy variables from categorical variables, could possibly increase the accuracy. But in order to make signifiant model improvements I think it is necessary to have a wider dataset with more information about the each building. With a few exceptions, my feature variables are on a municipal level: We know quite a bit about the municipality that each building is located in, but we know very little about each building. For example, it would be valuable to have more geographic, building-level information such as distance to nearest existing fiber node. This would be valuable variables for future work.  
+  
+
+
+
+
