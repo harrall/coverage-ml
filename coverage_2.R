@@ -2,7 +2,7 @@
 
 rm(list=ls(all=TRUE)) 
 cat("\014")  
-dev.off()
+#dev.off()
 
 ######### Part 1 ###############
 # Create dataset, validation set
@@ -21,7 +21,7 @@ if(!require(stringr)) install.packages("stringr")
 if(!require(corrr)) install.packages("corrr")
 if(!require(readxl)) install.packages("readxl")
 if(!require(forcats)) install.packages("forcats")
-
+if(!require(gridExtra)) install.packages("gridExtra")
 
 # Read in files & fix columns
 # Download main coverage file from nkom.no, rename columns
@@ -119,7 +119,7 @@ rm(dat_muni, dat_nkom)
 corr <- correlate(dat_all) 
 
 # Correlation plot
-corr %>% select(rowname, Y100) %>%
+corr_plot <- corr %>% select(rowname, Y100) %>%
   filter(rowname != 'Y100')%>%
   mutate(rowname=factor(rowname, levels = rowname[order(Y100)])) %>%
   ggplot(aes(x = rowname, y = Y100)) +
@@ -129,6 +129,7 @@ corr %>% select(rowname, Y100) %>%
        x = "Feature",
        y = "Correlation with Y") +
   coord_flip()
+corr_plot
 rm(corr)
 
 # Find average coverage
@@ -199,17 +200,18 @@ as.data.frame(prop.table(table(dat_all$b10, dat_all$Y100),1)) %>%
        y = "Rural share with 100 Mbit/s coverage") + 
     geom_hline(yintercept = average)
 
-# Continous distributions
+# Plots - Continous distributions
 
 dat_all$y100f <- as.factor(dat_all$Y100)
-dat_all %>% ggplot(aes(ave_income, colour = y100f)) + geom_density(size=1.2)
-dat_all %>% ggplot(aes(centrality, colour = y100f)) + geom_density(size=1.2)
-dat_all %>% ggplot(aes(pop_urban, colour = y100f)) + geom_density(size=1.2) +
+p1 <- dat_all %>% ggplot(aes(ave_income, colour = y100f)) + geom_density(size=1.2)
+p2 <- dat_all %>% ggplot(aes(centrality, colour = y100f)) + geom_density(size=1.2)
+p3 <- dat_all %>% ggplot(aes(employment, colour = y100f)) + geom_density(size=1.2)
+p4 <- dat_all %>% ggplot(aes(pop_urban, colour = y100f)) + geom_density(size=1.2) +
   scale_x_continuous(limits = c(0, 50000))
-dat_all %>% ggplot(aes(muni_free_rev, colour = y100f)) + geom_density(size=1.2)
-dat_all %>% ggplot(aes(muni_debt, colour = y100f)) + geom_density(size=1.2)
+p5 <- dat_all %>% ggplot(aes(muni_free_rev, colour = y100f)) + geom_density(size=1.2)
+p6 <- dat_all %>% ggplot(aes(muni_debt, colour = y100f)) + geom_density(size=1.2)
+
 dat_all %>% ggplot(aes(muni_net, colour = y100f)) + geom_density(size=1.2)
-dat_all %>% ggplot(aes(employment, colour = y100f)) + geom_density(size=1.2)
 dat_all %>% ggplot(aes(share_urban2, colour = y100f)) + geom_density(size=1.2)
 dat_all %>% ggplot(aes(area_km2, colour = y100f)) + geom_density(size=1.2) +
   scale_x_continuous(limits = c(0, 5000))
@@ -219,6 +221,8 @@ dat_all %>% ggplot(aes(households, colour = y100f)) + geom_density(size=1.2) +
   scale_x_continuous(limits = c(0, 10000))
 dat_all %>% ggplot(aes(virksomheter, colour = y100f)) + geom_density(size=1.2) +
   scale_x_continuous(limits = c(0, 4000))
+
+grid.arrange(p1,p2,p3,p4,p5,p6, layout_matrix = rbind(c(1,2),c(3,4),c(5,6)))
 
 ######### Part 3 ###############
 # Modeling
@@ -244,30 +248,52 @@ y_hat <- 0
 mu_naive <- mean(y_hat == test_set$y100f)
 mu_naive
 
-# LDA - 0.59 - short run time
+# LDA - short run time
 train_lda <- train(y100f ~ .,method = "lda",data = train_set)
-confusionMatrix(predict(train_lda, test_set), test_set$y100f)$overall["Accuracy"]
+acc_lda <- confusionMatrix(predict(train_lda, test_set), test_set$y100f)$overall["Accuracy"]
 lda_imp <- varImp(train_lda)
 plot(lda_imp)
 
 # GLM model - works - 0.58 - short run time
 train_glm <- train(y100f ~ .,method = "glm",data = train_set)
-confusionMatrix(predict(train_glm, test_set), test_set$y100f)$overall["Accuracy"]
+acc_glm <- confusionMatrix(predict(train_glm, test_set), test_set$y100f)$overall["Accuracy"]
 glm_imp <- varImp(train_glm)
 plot(glm_imp)
 
 # KNN model - works - 0.65 - medium run time
 train_knn <- train(y100f ~ ., method = "knn",data = train_set)
-confusionMatrix(predict(train_knn, test_set), test_set$y100f)$overall["Accuracy"]
+acc_knn <- confusionMatrix(predict(train_knn, test_set), test_set$y100f)$overall["Accuracy"]
 imp_knn <- varImp(train_knn)
 plot(imp_knn)
 ggplot(train_knn, highlight = TRUE)
 
-
-# Random forest - long run time - 0.72
+# Random forest - long run time - 0.67
 train_rf <- train(y100f ~ ., method = "rf", data = train_set)
-confusionMatrix(predict(train_rf, test_set), test_set$y100f)$overall["Accuracy"]
+acc_rf <- confusionMatrix(predict(train_rf, test_set), test_set$y100f)$overall["Accuracy"]
 rf_imp <- varImp(train_rf)
 plot(rf_imp)
 rf_imp
+
+######### Part 4 ##################################
+# Results - model accuracy and variable importance
+###################################################
+
+# Add results - naive method
+results <- tibble(model = "Naive method", Accuracy = mu_naive)
+
+# Add results - LDA
+results <- add_row(results, model = "LDA", Accuracy = acc_lda)
+
+# Add results - GLM
+results <- add_row(results, model = "GLM", Accuracy = acc_glm)
+
+# Add results - KNN
+results <- add_row(results, model = "KNN", Accuracy = acc_knn)
+
+# Add results - Random Forest
+results <- add_row(results,  model = "Random Forest", Accuracy = acc_rf)
+
+results
+
+# test
 
