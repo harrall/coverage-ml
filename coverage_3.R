@@ -2,7 +2,6 @@
 
 rm(list=ls(all=TRUE)) 
 cat("\014")  
-dev.off()
 
 ######### Part 1 ###############
 # Create dataset, validation set
