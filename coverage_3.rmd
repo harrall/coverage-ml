@@ -199,7 +199,7 @@ corr_plot <- corr %>% select(rowname, Y100) %>%
        y = "Correlation with Y") +
   coord_flip()
 corr_plot
-rm(corr)
+
 ```
 
 Most variables are not very correlated with Y100, but some variables stand out:  
@@ -209,6 +209,14 @@ Most variables are not very correlated with Y100, but some variables stand out:
 * **oneh_s_13:** The municipal coverage of symmetrical 100 Mbit/s networks (in practise, fiber access networks) in 2013. The 'core' variable has value 1 of this coverage was larger than 10% and 0 if not.  
 * **op_hq:** There are some 80 fiber access network operators in Norway that provide 100 Mbit/s networks. The op_hq variable has a value of 1 if the building is located in a municipiality where one of these 80 operators has their main office.  
 * **ave_income:** The average gross income per adult in the municipality.  
+
+Also, some variables are highly correlated with each other. The table below shows that the "households" variable has a higher than 0.8 correlation with several other variables that I removed from the dataset.
+
+```{r corr2}
+# Correlation table
+corr %>% filter(households > 0.8) %>% subset(select = c(rowname, households))
+rm(corr)
+```
 
 Next, I looked at the average 100 Mbit/s coverage for rural buildings:  
 ```{r ave_coverage}
@@ -302,13 +310,13 @@ The charts below shows density plots for some of the predictors that are contino
 # Plots - Continous distributions
 
 dat_all$y100f <- as.factor(dat_all$Y100)
-p1 <- dat_all %>% ggplot(aes(ave_income, colour = y100f)) + geom_density(size=1.2)
-p2 <- dat_all %>% ggplot(aes(centrality, colour = y100f)) + geom_density(size=1.2)
-p3 <- dat_all %>% ggplot(aes(employment, colour = y100f)) + geom_density(size=1.2)
-p4 <- dat_all %>% ggplot(aes(pop_urban, colour = y100f)) + geom_density(size=1.2) +
+p1 <- dat_all %>% ggplot(aes(ave_income, colour = y100f)) + geom_density(size=1)
+p2 <- dat_all %>% ggplot(aes(centrality, colour = y100f)) + geom_density(size=1)
+p3 <- dat_all %>% ggplot(aes(employment, colour = y100f)) + geom_density(size=1)
+p4 <- dat_all %>% ggplot(aes(pop_urban, colour = y100f)) + geom_density(size=1) +
   scale_x_continuous(limits = c(0, 50000))
-p5 <- dat_all %>% ggplot(aes(muni_free_rev, colour = y100f)) + geom_density(size=1.2)
-p6 <- dat_all %>% ggplot(aes(muni_debt, colour = y100f)) + geom_density(size=1.2)
+p5 <- dat_all %>% ggplot(aes(muni_free_rev, colour = y100f)) + geom_density(size=1)
+p6 <- dat_all %>% ggplot(aes(muni_debt, colour = y100f)) + geom_density(size=1)
 
 grid.arrange(p1,p2,p3,p4,p5,p6)
 
@@ -316,7 +324,7 @@ grid.arrange(p1,p2,p3,p4,p5,p6)
 
 
 ## 3. Modeling
-This chapter desribes the modeling work I did with the dat_all data. First, I normalized the continous variables so that they have mean=0 and a standard deviation of 1. Then, I split the data into a training set and test set. Here's the code:  
+This chapter desribes the modeling work I did with the dat_all data. First, I removed highly correlated variables and normalized the continous variables so that they have mean=0 and a standard deviation of 1. Then, I sampled 50,000 rows from the dat_all dataset in order to reduce model training time. Then, I split the reduced dataset into a training set and test set. Here's the code:  
 
 
 ```{r test_train, message=FALSE, warning=FALSE}
@@ -324,32 +332,30 @@ This chapter desribes the modeling work I did with the dat_all data. First, I no
 # Modeling
 ################################
 
+## Remove highly correlated and redundant variables
+dat_all <- dat_all %>% 
+  subset(select = -c(pop_urban, population, muni_homes, urban_area, urban_pop_per_km2, 
+                     virksomheter, muni_free_rev, share_urban2))
+
 ## Normalize continous variables with mean=0 and sd=1
 dat_all <- dat_all %>% 
   mutate(ave_income = (ave_income - mean(ave_income))/sd(ave_income),
          centrality = (centrality - mean(centrality))/sd(centrality),
          employment = (employment - mean(employment))/sd(employment),
-         pop_urban = (pop_urban - mean(pop_urban))/sd(pop_urban),
-         muni_free_rev = (muni_free_rev - mean(muni_free_rev))/sd(muni_free_rev),
          muni_debt = (muni_debt - mean(muni_debt))/sd(muni_debt),
          muni_net = (muni_net - mean(muni_net))/sd(muni_net),
-         share_urban2 = (share_urban2 - mean(share_urban2))/sd(share_urban2),
          area_km2 = (area_km2 - mean(area_km2))/sd(area_km2),
-         muni_homes = (muni_homes - mean(muni_homes))/sd(muni_homes),
          households = (households - mean(households))/sd(households),
-         virksomheter = (virksomheter - mean(virksomheter))/sd(virksomheter),
          rural_density = (rural_density - mean(rural_density))/sd(rural_density),
-         urban_area = (urban_area - mean(urban_area))/sd(urban_area),
-         pop_per_km2 = (pop_per_km2 - mean(pop_per_km2))/sd(pop_per_km2),
-         urban_pop_per_km2 = (urban_pop_per_km2 - mean(urban_pop_per_km2))/sd(urban_pop_per_km2))
+         pop_per_km2 = (pop_per_km2 - mean(pop_per_km2))/sd(pop_per_km2))
 
 ## Make test and training set
+# Development set - reduce dat_all to reduce computation time
 set.seed(1, sample.kind = "Rounding")
-dat_small <- sample_n(dat_all,1000,replace = FALSE)
-# for final round: set dat_small <- dat_all
+dat_small <- sample_n(dat_all,50000,replace = FALSE)
+rm(dat_all)
 
-dat_small <- dat_small %>%
-  subset(select = -c(Y100))
+dat_small <- dat_small %>% subset(select = -c(Y100))
 
 test_index <- createDataPartition(y = dat_small$y100f, times = 1, p = 0.1, list = FALSE)
 train_set <- dat_small[-test_index,]
@@ -357,7 +363,7 @@ test_set <- dat_small[test_index,]
 
 train_set <- as.data.frame(train_set)
 test_set <- as.data.frame(test_set)
-
+rm(dat_small, test_index)
 ```
 
 
@@ -424,14 +430,14 @@ At first, the kNN model defines the distance between all observations based on t
 
 ```{r knn, message=FALSE, warning=FALSE}
 # KNN model
-train_knn <- train(y100f ~ ., method = "knn",data = train_set)
+train_knn <- train(y100f ~ ., method = "knn",data = train_set, use.all=FALSE)
 acc_knn <- confusionMatrix(predict(train_knn, test_set), test_set$y100f)$overall["Accuracy"]
 imp_knn <- varImp(train_knn)
 plot(imp_knn)
 
 ```
 
-The accuracy achieved with the kNN method is `r acc_knn`. This result is much better than the parametric LDS and GLM methods, and some 10 percentage points better than guessing. Not bad! But can we do even better?  
+The accuracy achieved with the kNN method is `r acc_knn`. This result is better than the parametric LDS and GLM methods, and almost 15 percentage points better than guessing. Not bad! But can we do even better?  
 
 ### The random forests model (RF) {.css_class}  
 According to the author Anish Walia, ensemble learning is a type of supervised learning technique where the basic idea is to generate multiple models on a training dataset and then combine them to generate a well-performing model which aviods overfitting.  
@@ -449,7 +455,7 @@ plot(rf_imp)
 ```
 
 The accuracy achieved with the Randon Forests method is `r acc_rf`. This result is the best so far, and we're now far from 'simply-guessing' territory. There is little question that we can increase the quality of rural broadband coverage predictions using machine learning methods.  
-\newpage
+
 
 ## 4. Results and conclusion
 
@@ -459,7 +465,7 @@ The table below summarizes the accuracy achieved from the various models applied
 
 ```{r results, include=FALSE}
 ######### Part 4 ##################################
-# Results - model accuracy and variable importance
+# Results - model accuracy 
 ###################################################
 
 # Add results - naive method
@@ -482,6 +488,7 @@ results <- add_row(results,  model = "Random Forest", Accuracy = acc_rf)
 ```{r results2, echo=FALSE, results='asis'}
 kable(results, caption = "Accuracy results")
 ```
+
 Clearly, the choice of machine-learning method really matters. The quality of predictions varies quite a bit with the algorithm, and it is important to try out different models before making a final decision on which model to use.
 
 ### Conclusion {.css_class}  

@@ -1,4 +1,4 @@
-# This script reads kaggle files and runs the machine learning
+# The rural broadband coverage prediction model
 
 rm(list=ls(all=TRUE)) 
 cat("\014")  
@@ -22,8 +22,10 @@ if(!require(readxl)) install.packages("readxl")
 if(!require(forcats)) install.packages("forcats")
 if(!require(gridExtra)) install.packages("gridExtra")
 
+
 # Read in files & fix columns
 # Download main coverage file from nkom.no, rename columns
+
 url <- "https://www.nkom.no/npt/dekningskart/2019/r%c3%a5data/2019_dekningskart_bygninger.csv"
 download.file(url, "nkom.csv")
 dat_nkom <- read_delim("nkom.csv",delim = ";", locale = locale(decimal_mark = "."))
@@ -133,7 +135,9 @@ corr_plot <- corr %>% select(rowname, Y100) %>%
        y = "Correlation with Y") +
   coord_flip()
 corr_plot
-rm(corr)
+
+# Correlation table
+corr %>% filter(households > 0.8) %>% subset(select = c(rowname, households))
 
 # Find average coverage
 y_hat <- 1
@@ -231,32 +235,33 @@ grid.arrange(p1,p2,p3,p4,p5,p6, layout_matrix = rbind(c(1,2),c(3,4),c(5,6)))
 # Modeling
 ################################
 
+## Remove highly correlated and redundant variables
+dat_all <- dat_all %>% 
+  subset(select = -c(pop_urban, population, muni_homes, urban_area, urban_pop_per_km2, 
+                     virksomheter, muni_free_rev, share_urban2))
+
+
 ## Normalize continous variables with mean=0 and sd=1
 dat_all <- dat_all %>% 
   mutate(ave_income = (ave_income - mean(ave_income))/sd(ave_income),
          centrality = (centrality - mean(centrality))/sd(centrality),
          employment = (employment - mean(employment))/sd(employment),
-         pop_urban = (pop_urban - mean(pop_urban))/sd(pop_urban),
-         muni_free_rev = (muni_free_rev - mean(muni_free_rev))/sd(muni_free_rev),
          muni_debt = (muni_debt - mean(muni_debt))/sd(muni_debt),
          muni_net = (muni_net - mean(muni_net))/sd(muni_net),
-         share_urban2 = (share_urban2 - mean(share_urban2))/sd(share_urban2),
          area_km2 = (area_km2 - mean(area_km2))/sd(area_km2),
-         muni_homes = (muni_homes - mean(muni_homes))/sd(muni_homes),
          households = (households - mean(households))/sd(households),
-         virksomheter = (virksomheter - mean(virksomheter))/sd(virksomheter),
          rural_density = (rural_density - mean(rural_density))/sd(rural_density),
-         urban_area = (urban_area - mean(urban_area))/sd(urban_area),
-         pop_per_km2 = (pop_per_km2 - mean(pop_per_km2))/sd(pop_per_km2),
-         urban_pop_per_km2 = (urban_pop_per_km2 - mean(urban_pop_per_km2))/sd(urban_pop_per_km2))
+         pop_per_km2 = (pop_per_km2 - mean(pop_per_km2))/sd(pop_per_km2))
 
 ## Make test and training set
+# Development set - reduce dat_all to reduce computation time
 set.seed(1, sample.kind = "Rounding")
-dat_small <- sample_n(dat_all,10000,replace = FALSE)
+dat_small <- sample_n(dat_all,50000,replace = FALSE)
 # for final round: set dat_small <- dat_all
+# dat_small <- dat_all
+rm(dat_all)
 
-dat_small <- dat_small %>%
-  subset(select = -c(Y100))
+dat_small <- dat_small %>% subset(select = -c(Y100))
 
 test_index <- createDataPartition(y = dat_small$y100f, times = 1, p = 0.1, list = FALSE)
 train_set <- dat_small[-test_index,]
@@ -265,33 +270,39 @@ test_set <- dat_small[test_index,]
 train_set <- as.data.frame(train_set)
 test_set <- as.data.frame(test_set)
 
+rm(dat_small, test_index)
+
 ## The first model - accuracy = 0.55
 y_hat <- 0
 mu_naive <- mean(y_hat == test_set$y100f)
 mu_naive
 
-# LDA - short run time
+# LDA model
 train_lda <- train(y100f ~ .,method = "lda",data = train_set)
 acc_lda <- confusionMatrix(predict(train_lda, test_set), test_set$y100f)$overall["Accuracy"]
+acc_lda
 lda_imp <- varImp(train_lda)
 plot(lda_imp)
 
-# GLM model - works - 0.58 - short run time
+# GLM model
 train_glm <- train(y100f ~ .,method = "glm",data = train_set)
 acc_glm <- confusionMatrix(predict(train_glm, test_set), test_set$y100f)$overall["Accuracy"]
+acc_glm
 glm_imp <- varImp(train_glm)
 plot(glm_imp)
 
-# KNN model - works - 0.65 - medium run time
-train_knn <- train(y100f ~ ., method = "knn",data = train_set)
+# KNN model
+train_knn <- train(y100f ~ ., method = "knn",data = train_set, use.all=FALSE)
 acc_knn <- confusionMatrix(predict(train_knn, test_set), test_set$y100f)$overall["Accuracy"]
+acc_knn
 imp_knn <- varImp(train_knn)
 plot(imp_knn)
 ggplot(train_knn, highlight = TRUE)
 
-# Random forest - long run time - 0.67
+# Random forest
 train_rf <- train(y100f ~ ., method = "rf", data = train_set)
 acc_rf <- confusionMatrix(predict(train_rf, test_set), test_set$y100f)$overall["Accuracy"]
+acc_rf
 rf_imp <- varImp(train_rf)
 plot(rf_imp)
 rf_imp
@@ -301,7 +312,6 @@ rf_imp
 ###################################################
 
 # Add results - naive method
-rm(results)
 results <- tibble(model = "Naive method", Accuracy = mu_naive)
 
 # Add results - LDA
@@ -318,5 +328,5 @@ results <- add_row(results,  model = "Random Forest", Accuracy = acc_rf)
 
 results
 
-# test
+
 
