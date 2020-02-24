@@ -1,11 +1,12 @@
 # The rural broadband coverage prediction model
 
-rm(list=ls(all=TRUE)) 
-cat("\014")  
-
 ######### Part 1 ###############
-# Create dataset, validation set
+# Read and wrangle data
 ################################
+
+# Start with a clean environment and fresh console
+rm(list=ls(all=TRUE)) 
+cat("\014") 
 
 # Ensure the right packages are available
 
@@ -23,7 +24,7 @@ if(!require(forcats)) install.packages("forcats")
 if(!require(gridExtra)) install.packages("gridExtra")
 
 
-# Read in files & fix columns
+### Read files, rename columns, join tables
 # Download main coverage file from nkom.no, rename columns
 
 url <- "https://www.nkom.no/npt/dekningskart/2019/r%c3%a5data/2019_dekningskart_bygninger.csv"
@@ -64,7 +65,7 @@ dat_muni$muni_nr <- as.character(dat_muni$muni_nr)
 dat_muni <- dat_muni %>% mutate(n_char = nchar(muni_nr),
                                   county = str_sub(muni_nr,1,n_char-2))
 
-# set Trøndelag region to 15, set numeric, remove n_char
+# set Trøndelag county to 15, set numeric, remove n_char
 dat_muni$county <- recode(dat_muni$county,"50"="16")
 dat_muni$muni_nr <- as.numeric(dat_muni$muni_nr)
 dat_muni$county <- as.numeric(dat_muni$county)
@@ -157,7 +158,7 @@ as.data.frame(prop.table(table(dat_all$county, dat_all$Y100),1)) %>%
        y = "Rural share with 100 Mbit/s coverage") + 
   geom_hline(yintercept = average)
 
-# op_hq
+# Operator headquarters plot
 as.data.frame(prop.table(table(dat_all$op_hq, dat_all$Y100),1)) %>%
   rename(Variable = Var1, Y100=Var2, Frequency = Freq) %>%
   filter(Y100 == 1) %>% arrange(Frequency) %>%
@@ -170,7 +171,7 @@ as.data.frame(prop.table(table(dat_all$op_hq, dat_all$Y100),1)) %>%
        y = "Rural share with 100 Mbit/s coverage") + 
   geom_hline(yintercept = average)
 
-# public support
+# public support plot
 as.data.frame(prop.table(table(dat_all$public_support, dat_all$Y100),1)) %>%
   rename(Variable = Var1, Y100=Var2, Frequency = Freq) %>%
   filter(Y100 == 1) %>% arrange(Frequency) %>%
@@ -197,7 +198,7 @@ as.data.frame(prop.table(table(dat_all$core, dat_all$Y100),1)) %>%
   geom_hline(yintercept = average)
 
 
-# b10
+# Basic broadband (b10) plot
 as.data.frame(prop.table(table(dat_all$b10, dat_all$Y100),1)) %>%
   rename(Variable = Var1, Y100=Var2, Frequency = Freq) %>%
   ggplot(aes(x = Variable, y=Frequency, fill = Y100)) + geom_bar(stat='identity') +
@@ -217,17 +218,6 @@ p4 <- dat_all %>% ggplot(aes(pop_urban, colour = y100f)) + geom_density(size=1.2
   scale_x_continuous(limits = c(0, 50000))
 p5 <- dat_all %>% ggplot(aes(muni_free_rev, colour = y100f)) + geom_density(size=1.2)
 p6 <- dat_all %>% ggplot(aes(muni_debt, colour = y100f)) + geom_density(size=1.2)
-
-dat_all %>% ggplot(aes(muni_net, colour = y100f)) + geom_density(size=1.2)
-dat_all %>% ggplot(aes(share_urban2, colour = y100f)) + geom_density(size=1.2)
-dat_all %>% ggplot(aes(area_km2, colour = y100f)) + geom_density(size=1.2) +
-  scale_x_continuous(limits = c(0, 5000))
-dat_all %>% ggplot(aes(muni_homes, colour = y100f)) + geom_density(size=1.2) +
-  scale_x_continuous(limits = c(0, 10000))
-dat_all %>% ggplot(aes(households, colour = y100f)) + geom_density(size=1.2) +
-  scale_x_continuous(limits = c(0, 10000))
-dat_all %>% ggplot(aes(virksomheter, colour = y100f)) + geom_density(size=1.2) +
-  scale_x_continuous(limits = c(0, 4000))
 
 grid.arrange(p1,p2,p3,p4,p5,p6, layout_matrix = rbind(c(1,2),c(3,4),c(5,6)))
 
@@ -257,8 +247,6 @@ dat_all <- dat_all %>%
 # Development set - reduce dat_all to reduce computation time
 set.seed(1, sample.kind = "Rounding")
 dat_small <- sample_n(dat_all,50000,replace = FALSE)
-# for final round: set dat_small <- dat_all
-# dat_small <- dat_all
 rm(dat_all)
 
 dat_small <- dat_small %>% subset(select = -c(Y100))
@@ -277,21 +265,21 @@ y_hat <- 0
 mu_naive <- mean(y_hat == test_set$y100f)
 mu_naive
 
-# LDA model
+## LDA model
 train_lda <- train(y100f ~ .,method = "lda",data = train_set)
 acc_lda <- confusionMatrix(predict(train_lda, test_set), test_set$y100f)$overall["Accuracy"]
 acc_lda
 lda_imp <- varImp(train_lda)
 plot(lda_imp)
 
-# GLM model
+## GLM model
 train_glm <- train(y100f ~ .,method = "glm",data = train_set)
 acc_glm <- confusionMatrix(predict(train_glm, test_set), test_set$y100f)$overall["Accuracy"]
 acc_glm
 glm_imp <- varImp(train_glm)
 plot(glm_imp)
 
-# KNN model
+## KNN model
 train_knn <- train(y100f ~ ., method = "knn",data = train_set, use.all=FALSE)
 acc_knn <- confusionMatrix(predict(train_knn, test_set), test_set$y100f)$overall["Accuracy"]
 acc_knn
@@ -299,7 +287,7 @@ imp_knn <- varImp(train_knn)
 plot(imp_knn)
 ggplot(train_knn, highlight = TRUE)
 
-# Random forest
+## Random forest
 train_rf <- train(y100f ~ ., method = "rf", data = train_set)
 acc_rf <- confusionMatrix(predict(train_rf, test_set), test_set$y100f)$overall["Accuracy"]
 acc_rf

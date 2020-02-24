@@ -1,7 +1,7 @@
 ---
 title: "Rural broadband coverage project report"
 author: "Harald Lie"
-date: "2020-Feb-28"
+date: "2020-Feb-24"
 output: pdf_document
 ---
 
@@ -22,7 +22,7 @@ Given that ca. 45% of rural buildings actually have 100 Mbit/s coverage, quite a
 
 ```{r setup2, include=FALSE}
 ######### Part 1 ###############
-# Create dataset, validation set
+# Read and wrangle data
 ################################
 
 # Ensure the right packages are available
@@ -456,6 +456,7 @@ plot(rf_imp)
 
 The accuracy achieved with the Randon Forests method is `r acc_rf`. This result is the best so far, and we're now far from 'simply-guessing' territory. There is little question that we can increase the quality of rural broadband coverage predictions using machine learning methods.  
 
+\newpage
 
 ## 4. Results and conclusion
 
